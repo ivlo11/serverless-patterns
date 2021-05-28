@@ -5,7 +5,7 @@ bucket and configures a cloudfront distribution and route53 CNAME in front of it
 
 ## Deploy
 ```
-/usr/local/bin/sam deploy --template-file /path/to/template-cloudfront-functions.yaml \
+/usr/local/bin/sam deploy --template-file /path/to/template-cloudfront-function.yaml \
   --stack-name cloudfront-functions \
   --s3-bucket your.s3.bucket \
   --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
