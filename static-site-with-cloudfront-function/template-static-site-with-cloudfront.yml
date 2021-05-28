@@ -1,0 +1,139 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Static Site
+
+Parameters:
+  ExistingS3Bucket:
+    Description: Name of an existing S3 bucket, or leave blank to create a new S3 bucket.
+    Type: String
+    MaxLength: 63
+    AllowedPattern: ^[a-z0-9.-]*$
+  HostedZoneName:
+    Description: Name of a root domain
+    Type: String
+    MaxLength: 63
+    AllowedPattern: ^[a-z0-9.-]*$
+  SubDomain:
+    Description: Name of your static site's subdomain
+    Type: String
+    MaxLength: 63
+    AllowedPattern: ^[a-z0-9.-]*$
+  CloudFrontStackName:
+    Description: Name of cloudformation stack with cloudfront functions
+    Type: String
+    MaxLength: 63
+    AllowedPattern: ^[a-z0-9-]*$
+
+Conditions:
+  CreateS3Bucket: !Equals [ !Ref ExistingS3Bucket, "" ]
+
+Resources:
+  # If an exiting S3 bucket name was not provided a new S3 bucket will be created
+  s3Bucket:
+    Type: 'AWS::S3::Bucket'
+    Condition: CreateS3Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  bucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Condition: CreateS3Bucket
+    Properties:
+      Bucket: !If [ CreateS3Bucket, !Ref s3Bucket, !Ref ExistingS3Bucket ]
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::cloudfront:user/CloudFront Origin Access Identity ${originAccessIdentity}'
+            Action: 's3:GetObject'
+            Resource: !Sub
+              - arn:aws:s3:::${bucketName}/*
+              - {bucketName : !If [ CreateS3Bucket, !Ref s3Bucket, !Ref ExistingS3Bucket ]}
+
+  cloudfrontDistribution:
+    Type: 'AWS::CloudFront::Distribution'
+    Properties:
+      DistributionConfig:
+        Comment: Static Site with CloudFront Function
+        Aliases:
+          - !Sub ${SubDomain}.${HostedZoneName}
+        CustomErrorResponses:
+          - ErrorCachingMinTTL: 600
+            ErrorCode: 403
+            ResponseCode: 404
+            ResponsePagePath: /error.html
+        DefaultCacheBehavior:
+          AllowedMethods:
+            - GET
+            - HEAD
+          Compress: true
+          CachePolicyId: !Ref cachePolicy
+          FunctionAssociations:
+            - EventType: viewer-response
+              FunctionARN: !ImportValue
+                'Fn::Sub': ${CloudFrontStackName}-AddSecurityHeadersFunction
+          TargetOriginId: staticSiteOrigin
+          ViewerProtocolPolicy: redirect-to-https
+        DefaultRootObject: index.html
+        Enabled: true
+        Origins:
+          - DomainName: !Sub
+              - ${bucketName}.s3.amazonaws.com
+              - {bucketName : !If [ CreateS3Bucket, !Ref s3Bucket, !Ref ExistingS3Bucket ]}
+            Id: staticSiteOrigin
+            S3OriginConfig:
+              OriginAccessIdentity: !Sub origin-access-identity/cloudfront/${originAccessIdentity.Id}
+        ViewerCertificate:
+          AcmCertificateArn: !Ref certificate
+          SslSupportMethod: sni-only
+          MinimumProtocolVersion: TLSv1.2_2019
+
+  cachePolicy:
+    Type: AWS::CloudFront::CachePolicy
+    Properties:
+      CachePolicyConfig:
+        Comment: Caching Policy
+        DefaultTTL: 600
+        MaxTTL: 900
+        MinTTL: 300
+        Name: staticSiteCachePolicy
+        ParametersInCacheKeyAndForwardedToOrigin:
+          CookiesConfig:
+            CookieBehavior: none
+          EnableAcceptEncodingGzip: true
+          HeadersConfig:
+            HeaderBehavior: none
+          QueryStringsConfig:
+            QueryStringBehavior: all
+
+  originAccessIdentity:
+    Type: AWS::CloudFront::CloudFrontOriginAccessIdentity
+    Properties:
+      CloudFrontOriginAccessIdentityConfig:
+        Comment: CloudFront only access to S3
+
+  certificate:
+    Type: AWS::CertificateManager::Certificate
+    Properties:
+      DomainName: !Sub ${SubDomain}.${HostedZoneName}
+      ValidationMethod: DNS
+
+  route53Record:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      Comment: sample static site
+      HostedZoneName: !Sub ${HostedZoneName}.
+      Name: !Sub ${SubDomain}.${HostedZoneName}.
+      Type: CNAME
+      TTL: 300
+      ResourceRecords:
+        - !GetAtt cloudfrontDistribution.DomainName
+
+Outputs:
+  S3BucketName:
+    Description: Name of the S3 bucket
+    Value: !If [ CreateS3Bucket, !Ref s3Bucket, !Ref ExistingS3Bucket ]
